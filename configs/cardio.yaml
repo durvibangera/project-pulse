@@ -1,0 +1,18 @@
+experiment_name: "PULSE_Cardio"
+model_name: "CardioClassifier"
+source_datasets:
+  - "statlog"
+label_column: "cardio_label"
+features:
+  - "age"
+  - "gender"
+  - "blood_pressure_sys"
+  - "cholesterol"
+  - "heart_rate"
+output_model_path: "models/cardio_xgb.pkl"
+model_params:
+  n_estimators: 200
+  max_depth: 5
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8

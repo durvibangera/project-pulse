@@ -74,6 +74,8 @@ mlflow/
 chroma_db/
 
 plan.txt
+prompt.txt
+add-ons.txt
 
 # OS
 .DS_Store

@@ -1,0 +1,21 @@
+experiment_name: "PULSE_Diabetes"
+model_name: "DiabetesClassifier"
+source_datasets:
+  - "diabetes_130"
+  - "nhanes"
+label_column: "diabetes_label"
+features:
+  - "age"
+  - "gender"
+  - "bmi"
+  - "glucose"
+  - "hba1c"
+  - "blood_pressure_sys"
+  - "blood_pressure_dia"
+model_params:
+  n_estimators: 300
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+output_model_path: "models/diabetes_xgb.pkl"

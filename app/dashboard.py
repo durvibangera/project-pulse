@@ -72,6 +72,18 @@ with st.sidebar:
     )
     st.divider()
     st.caption("v1.0 · Global Data Science & Analytics")
+    st.divider()
+    st.header("Reports")
+    if st.button("Generate PDF Report"):
+        from src.reporting.pdf_report import generate_model_report
+        generate_model_report()
+        with open("reports/PULSE_Model_Report.pdf", "rb") as f:
+            st.download_button(
+                label="Download PDF Report",
+                data=f,
+                file_name="PULSE_Model_Report.pdf",
+                mime="application/pdf",
+            )
 
 # ════════════════════════════════════════════════════════════════════════════
 # TABS
