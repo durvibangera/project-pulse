@@ -73,6 +73,8 @@ mlflow/
 # ChromaDB (large vector store)
 chroma_db/
 
+plan.txt
+
 # OS
 .DS_Store
 .AppleDouble
