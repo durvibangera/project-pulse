@@ -1,0 +1,98 @@
+# Environment
+.env
+.env.local
+.env.*.local
+venv/
+env/
+ENV/
+*.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+conda-env/
+.conda/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*.ipynbtest
+
+# Data (large files)
+data/raw/**/*.csv
+data/raw/**/*.xpt
+data/raw/**/*.tsv
+data/raw/**/*.dat
+data/raw/**/*.doc
+Index
+data/processed/**/*.parquet
+data/processed/**/*.pkl
+
+# Models & outputs
+models/*.pkl
+models/*.joblib
+reports/**/*.html
+*.mlflow
+
+# MLflow
+mlflow/mlruns/
+mlflow/.trash/
+
+# ChromaDB (large vector store)
+chroma_db/
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+*.cache
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.editorconfig
+*.bak

@@ -1,0 +1,774 @@
+# PROMPT.md — Project P.U.L.S.E.
+## Predictive Unified Life-sciences Summarization Engine
+### Full Implementation Guide 
+
+---
+
+## 0. Project Overview
+
+**Goal:** Build an end-to-end Clinical Intelligence Platform that demonstrates Real-World Evidence (RWE) analysis, multi-vertical predictive modeling, ML model monitoring, and NLP-powered research summarization — directly mapping to the Abbott Global Data Science & Analytics (GDSA) role.
+
+**Datasets:**
+| ID | Dataset | Source | Role in Project |
+|---|---|---|---|
+| D1 | Diabetes 130-US Hospitals | UCI | Primary ML training (Metabolic Vertical) |
+| D2 | NHANES (2015-16 + 2021-23) | CDC | Drift simulation (Model Monitoring) |
+| D3 | Chronic Disease Prediction | Kaggle | Multi-vertical feature enrichment |
+| D4 | Statlog Heart Disease | UCI | Cardiovascular Vertical ML |
+| D5 | Drug Reviews (Druglib.com) | UCI | NLP / RAG Summarization Engine |
+
+**Four Layers:**
+- **Layer 1 — Feature Store:** Unified data warehouse across all 5 datasets
+- **Layer 2 — ML Engine:** Diabetes + Cardiovascular predictive models
+- **Layer 3 — Sentinel Suite:** NHANES drift detection (2015-16 → 2021-23)
+- **Layer 4 — Evidence Summarizer:** Drug review NLP + RAG pipeline
+
+---
+
+## 1. Repository Structure
+
+```
+pulse/
+├── data/
+│   ├── raw/
+│   │   ├── diabetes-uci/          # D1: diabetic_data.csv
+│   │   ├── nhanes/
+│   │   │   ├── 2015-16/           # D2a: DEMO_2015-26.XPT, LAB_2015-16.XPT, etc.
+│   │   │   └── 2021-23/           # D2b: DEMO_2021-23.XPT, LAB_2021-23.XPT, etc.
+│   │   ├── chronic-disease/       # D3: chronic_disease.csv
+│   │   ├── statlog-heart/         # D4: heart.dat
+│   │   └── drug-reviews/          # D5: druglib_reviews.csv
+│   └── processed/
+│       ├── master_patient_table.parquet
+│       ├── nhanes_2015.parquet
+│       └── nhanes_2021.parquet
+├── notebooks/
+│   ├── 01_eda_and_cleaning.ipynb
+│   ├── 02_feature_store.ipynb
+│   ├── 03_ml_diabetes.ipynb
+│   ├── 04_ml_cardiovascular.ipynb
+│   ├── 05_drift_detection.ipynb
+│   └── 06_nlp_rag_pipeline.ipynb
+├── src/
+│   ├── data/
+│   │   ├── loader.py              # All dataset loaders
+│   │   ├── cleaner.py             # Standardization & cleaning
+│   │   └── feature_store.py      # Master table builder
+│   ├── models/
+│   │   ├── diabetes_model.py
+│   │   ├── cardio_model.py
+│   │   └── base_model.py         # Shared training/eval logic
+│   ├── monitoring/
+│   │   ├── drift_detector.py     # Evidently AI wrapper
+│   │   └── health_report.py      # Model Health Report generator
+│   └── nlp/
+│       ├── rag_pipeline.py       # LangChain + ChromaDB
+│       └── summarizer.py         # Drug review summarizer
+├── app/
+│   └── dashboard.py              # Streamlit dashboard
+├── mlflow/                        # MLflow experiment tracking
+├── reports/
+│   └── model_health_report.html  # Auto-generated drift reports
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## 2. Environment Setup
+
+```bash
+# Create environment
+conda create -n pulse python=3.11
+conda activate pulse
+
+# Core
+pip install pandas numpy scikit-learn xgboost
+
+# MLOps & Monitoring
+pip install mlflow evidently
+
+# NLP / RAG
+pip install langchain langchain-community chromadb sentence-transformers
+pip install openai  # OR: pip install ollama (for local Llama 3)
+
+# NHANES XPT reader
+pip install pyreadstat
+
+# Dashboard
+pip install streamlit plotly
+
+# Explainability
+pip install shap
+
+# Utilities
+pip install python-dotenv tqdm joblib
+```
+
+**`.env` file:**
+```
+OPENAI_API_KEY=your_key_here   # Skip if using Ollama locally
+MLFLOW_TRACKING_URI=./mlflow
+```
+
+---
+
+## 3. Layer 1 — Unified Feature Store (Data Engineering)
+
+### 3.1 Shared Schema Design
+
+The core insight: **Diabetes 130, NHANES, Statlog, and Chronic Disease all share a common biomarker vocabulary.** Map them to a unified schema before modeling.
+
+**Master Schema (target columns):**
+
+```python
+MASTER_SCHEMA = {
+    # Demographics
+    "patient_id": str,
+    "age": float,          # years (standardized)
+    "gender": int,         # 0=F, 1=M
+    "bmi": float,
+
+    # Metabolic Panel
+    "glucose": float,      # mg/dL
+    "hba1c": float,        # % (if available)
+    "insulin": float,
+
+    # Cardiovascular Panel
+    "blood_pressure_sys": float,   # systolic mmHg
+    "blood_pressure_dia": float,   # diastolic mmHg
+    "cholesterol": float,
+    "heart_rate": float,
+
+    # Renal / Other
+    "serum_creatinine": float,
+    "skin_thickness": float,
+
+    # Labels
+    "diabetes_label": int,    # 0/1
+    "cardio_label": int,      # 0/1
+    "source_dataset": str,    # "diabetes_130" | "nhanes" | "statlog" | "chronic"
+    "nhanes_cycle": str,      # "2015_16" | "2021_23" | None
+}
+```
+
+---
+
+### 3.2 Dataset Loaders (`src/data/loader.py`)
+
+```python
+import pandas as pd
+import pyreadstat
+import os
+
+def load_diabetes_130(path="data/raw/diabetes_130/diabetic_data.csv"):
+    df = pd.read_csv(path)
+    df = df.replace("?", pd.NA)
+    return df
+
+def load_nhanes_cycle(cycle_dir: str):
+    """
+    Loads and merges Demographics (DEMO), Lab (LAB/GHB), and
+    Blood Pressure (BPX) XPT files from a single NHANES cycle.
+    Joins on SEQN (Respondent Sequence Number).
+    """
+    xpt_files = {
+        "demo": None,
+        "lab": None,
+        "bpx": None,
+        "ghb": None,   # HbA1c
+    }
+    for fname in os.listdir(cycle_dir):
+        lower = fname.lower()
+        if "demo" in lower:   xpt_files["demo"] = fname
+        elif "ghb" in lower:  xpt_files["ghb"] = fname
+        elif "bpx" in lower:  xpt_files["bpx"] = fname
+        elif lower.endswith(".xpt"): xpt_files["lab"] = fname
+
+    frames = {}
+    for key, fname in xpt_files.items():
+        if fname:
+            fpath = os.path.join(cycle_dir, fname)
+            df, _ = pyreadstat.read_xport(fpath)
+            frames[key] = df
+
+    # Merge all on SEQN
+    merged = frames["demo"]
+    for key in ["lab", "bpx", "ghb"]:
+        if key in frames:
+            merged = merged.merge(frames[key], on="SEQN", how="left")
+    return merged
+
+def load_statlog(path="data/raw/statlog_heart/heart.dat"):
+    cols = [
+        "age", "sex", "chest_pain_type", "blood_pressure_sys",
+        "cholesterol", "fasting_blood_sugar", "resting_ecg",
+        "max_heart_rate", "exercise_angina", "st_depression",
+        "st_slope", "major_vessels", "thal", "cardio_label"
+    ]
+    df = pd.read_csv(path, sep=" ", header=None, names=cols)
+    df["cardio_label"] = (df["cardio_label"] == 2).astype(int)  # 2=disease
+    return df
+
+def load_chronic_disease(path="data/raw/chronic_disease/chronic_disease.csv"):
+    return pd.read_csv(path)
+
+def load_drug_reviews(path="data/raw/drug_reviews/druglib_reviews.csv"):
+    df = pd.read_csv(path, sep="\t", encoding="latin-1")
+    return df
+```
+
+---
+
+### 3.3 Cleaning & Standardization (`src/data/cleaner.py`)
+
+```python
+import pandas as pd
+import numpy as np
+
+def clean_diabetes_130(df: pd.DataFrame) -> pd.DataFrame:
+    """Map Diabetes 130 to master schema."""
+    out = pd.DataFrame()
+    out["patient_id"] = df["encounter_id"].astype(str)
+    out["gender"] = df["gender"].map({"Male": 1, "Female": 0})
+    # Age is a range string like "[70-80)" — extract midpoint
+    out["age"] = df["age"].str.extract(r"\[(\d+)")[0].astype(float) + 5
+    out["hba1c"] = pd.to_numeric(df["A1Cresult"].map(
+        {">8": 9.0, ">7": 7.5, "Norm": 5.5, "None": np.nan}
+    ), errors="coerce")
+    out["diabetes_label"] = (df["readmitted"] != "NO").astype(int)
+    out["cardio_label"] = np.nan
+    out["source_dataset"] = "diabetes_130"
+    out["nhanes_cycle"] = None
+    return out
+
+def clean_nhanes(df: pd.DataFrame, cycle: str) -> pd.DataFrame:
+    """Map NHANES XPT merged frame to master schema."""
+    out = pd.DataFrame()
+    out["patient_id"] = df["SEQN"].astype(str) + f"_{cycle}"
+    out["age"] = df.get("RIDAGEYR")
+    out["gender"] = df.get("RIAGENDR").map({1: 1, 2: 0})  # 1=Male, 2=Female
+    out["bmi"] = df.get("BMXBMI")
+    out["glucose"] = df.get("LBXGLU")        # Fasting glucose mg/dL
+    out["hba1c"] = df.get("LBXGH")           # HbA1c %
+    out["blood_pressure_sys"] = df.get("BPXSY1")
+    out["blood_pressure_dia"] = df.get("BPXDI1")
+    # Diabetes label: HbA1c >= 6.5 OR glucose >= 126
+    out["diabetes_label"] = (
+        (out["hba1c"] >= 6.5) | (out["glucose"] >= 126)
+    ).astype(float)
+    out["cardio_label"] = np.nan
+    out["source_dataset"] = "nhanes"
+    out["nhanes_cycle"] = cycle
+    return out
+
+def clean_statlog(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["patient_id"] = "statlog_" + out.index.astype(str)
+    out["gender"] = out["sex"]
+    out["diabetes_label"] = np.nan
+    out["source_dataset"] = "statlog"
+    out["nhanes_cycle"] = None
+    return out[["patient_id", "age", "gender", "blood_pressure_sys",
+                "cholesterol", "max_heart_rate", "cardio_label",
+                "diabetes_label", "source_dataset", "nhanes_cycle"]]
+
+def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill numeric NaNs with median (clinical safe default)."""
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+    return df
+
+def remove_outliers_iqr(df: pd.DataFrame, col: str, factor: float = 3.0):
+    """Winsorize extreme values using IQR."""
+    Q1, Q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+    IQR = Q3 - Q1
+    df[col] = df[col].clip(Q1 - factor * IQR, Q3 + factor * IQR)
+    return df
+```
+
+---
+
+### 3.4 Building the Master Patient Table (`src/data/feature_store.py`)
+
+```python
+import pandas as pd
+from loader import (load_diabetes_130, load_nhanes_cycle, load_statlog)
+from cleaner import (clean_diabetes_130, clean_nhanes, clean_statlog, handle_missing)
+
+MASTER_COLS = [
+    "patient_id", "age", "gender", "bmi", "glucose", "hba1c",
+    "blood_pressure_sys", "blood_pressure_dia", "cholesterol",
+    "heart_rate", "diabetes_label", "cardio_label",
+    "source_dataset", "nhanes_cycle"
+]
+
+def build_feature_store():
+    frames = []
+
+    # D1 — Diabetes 130
+    frames.append(clean_diabetes_130(load_diabetes_130()))
+
+    # D2a — NHANES 2015-16 (training baseline)
+    nhanes_2015 = clean_nhanes(
+        load_nhanes_cycle("data/raw/nhanes/2015_16"), cycle="2015_16"
+    )
+    nhanes_2015.to_parquet("data/processed/nhanes_2015.parquet", index=False)
+    frames.append(nhanes_2015)
+
+    # D2b — NHANES 2021-23 (production drift stream)
+    nhanes_2021 = clean_nhanes(
+        load_nhanes_cycle("data/raw/nhanes/2021_23"), cycle="2021_23"
+    )
+    nhanes_2021.to_parquet("data/processed/nhanes_2021.parquet", index=False)
+    frames.append(nhanes_2021)
+
+    # D4 — Statlog
+    frames.append(clean_statlog(load_statlog()))
+
+    # Combine into Master Patient Table
+    master = pd.concat(frames, ignore_index=True)
+    master = master.reindex(columns=MASTER_COLS)
+    master = handle_missing(master)
+    master.to_parquet("data/processed/master_patient_table.parquet", index=False)
+
+    print(f"[PULSE] Master Patient Table built: {master.shape}")
+    return master
+
+if __name__ == "__main__":
+    build_feature_store()
+```
+
+**Run with:** `python src/data/feature_store.py`
+
+---
+
+## 4. Layer 2 — Multi-Vertical ML Engine
+
+### 4.1 Shared Base Model (`src/models/base_model.py`)
+
+```python
+import mlflow
+import mlflow.sklearn
+import shap
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics import roc_auc_score, f1_score, classification_report
+from xgboost import XGBClassifier
+
+class BaseModel:
+    def __init__(self, name: str, features: list, label: str):
+        self.name = name
+        self.features = features
+        self.label = label
+        self.model = XGBClassifier(
+            n_estimators=300,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            eval_metric="logloss",
+            random_state=42
+        )
+
+    def train(self, X_train, y_train, experiment_name="PULSE"):
+        mlflow.set_experiment(experiment_name)
+        with mlflow.start_run(run_name=self.name):
+            self.model.fit(X_train, y_train)
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            auc_scores = cross_val_score(
+                self.model, X_train, y_train, cv=cv, scoring="roc_auc"
+            )
+            mlflow.log_metric("cv_auc_mean", auc_scores.mean())
+            mlflow.log_metric("cv_auc_std", auc_scores.std())
+            mlflow.log_params(self.model.get_params())
+            mlflow.sklearn.log_model(self.model, artifact_path=self.name)
+            print(f"[{self.name}] CV AUC: {auc_scores.mean():.4f} ± {auc_scores.std():.4f}")
+
+    def evaluate(self, X_test, y_test):
+        preds = self.model.predict(X_test)
+        proba = self.model.predict_proba(X_test)[:, 1]
+        print(f"\n=== {self.name} Evaluation ===")
+        print(classification_report(y_test, preds))
+        print(f"ROC-AUC: {roc_auc_score(y_test, proba):.4f}")
+        return {"auc": roc_auc_score(y_test, proba), "f1": f1_score(y_test, preds)}
+
+    def explain(self, X_sample):
+        """SHAP feature importance — call after train()."""
+        explainer = shap.TreeExplainer(self.model)
+        shap_values = explainer.shap_values(X_sample)
+        shap.summary_plot(shap_values, X_sample, feature_names=self.features)
+        return shap_values
+```
+
+---
+
+### 4.2 Metabolic Vertical — Diabetes Model (`src/models/diabetes_model.py`)
+
+```python
+import pandas as pd
+import joblib
+from sklearn.model_selection import train_test_split
+from base_model import BaseModel
+
+DIABETES_FEATURES = [
+    "age", "gender", "bmi", "glucose", "hba1c",
+    "blood_pressure_sys", "blood_pressure_dia"
+]
+
+def train_diabetes_model():
+    master = pd.read_parquet("data/processed/master_patient_table.parquet")
+    df = master[
+        master["diabetes_label"].notna() &
+        master["source_dataset"].isin(["diabetes_130", "nhanes"])
+    ].copy()
+
+    X = df[DIABETES_FEATURES].fillna(df[DIABETES_FEATURES].median())
+    y = df["diabetes_label"].astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
+
+    model = BaseModel("DiabetesClassifier", DIABETES_FEATURES, "diabetes_label")
+    model.train(X_train, y_train)
+    metrics = model.evaluate(X_test, y_test)
+    model.explain(X_test.sample(200, random_state=42))
+
+    joblib.dump(model.model, "models/diabetes_xgb.pkl")
+    joblib.dump(DIABETES_FEATURES, "models/diabetes_features.pkl")
+    return model, metrics
+
+if __name__ == "__main__":
+    train_diabetes_model()
+```
+
+---
+
+### 4.3 Cardiovascular Vertical — Heart Model (`src/models/cardio_model.py`)
+
+```python
+import pandas as pd
+import joblib
+from sklearn.model_selection import train_test_split
+from base_model import BaseModel
+
+CARDIO_FEATURES = [
+    "age", "gender", "blood_pressure_sys", "cholesterol",
+    "max_heart_rate", "chest_pain_type", "exercise_angina",
+    "st_depression", "major_vessels"
+]
+
+def train_cardio_model():
+    # Statlog is small enough to load directly from processed
+    from loader import load_statlog
+    from cleaner import clean_statlog
+    df = clean_statlog(load_statlog())
+
+    X = df[CARDIO_FEATURES].fillna(df[CARDIO_FEATURES].median())
+    y = df["cardio_label"].astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
+
+    model = BaseModel("CardioClassifier", CARDIO_FEATURES, "cardio_label")
+    model.train(X_train, y_train)
+    model.evaluate(X_test, y_test)
+    model.explain(X_test.sample(min(200, len(X_test)), random_state=42))
+
+    joblib.dump(model.model, "models/cardio_xgb.pkl")
+    return model
+
+if __name__ == "__main__":
+    train_cardio_model()
+```
+
+---
+
+## 5. Layer 3 — Sentinel Suite (MLOps & Drift Detection)
+
+### 5.1 Core Concept
+
+Train the diabetes model on **NHANES 2015-16** (pre-pandemic baseline).
+Run that same model on **NHANES 2021-23** (post-pandemic RWE).
+Detect **data drift** and **concept drift** — generate a Model Health Report with alerts.
+
+---
+
+### 5.2 Drift Detector (`src/monitoring/drift_detector.py`)
+
+```python
+import pandas as pd
+import joblib
+from evidently.report import Report
+from evidently.metric_preset import DataDriftPreset, ClassificationPreset
+from evidently.metrics import DatasetDriftMetric, DataDriftTable, ColumnDriftMetric
+
+DRIFT_FEATURES = [
+    "age", "gender", "bmi", "glucose", "hba1c",
+    "blood_pressure_sys", "blood_pressure_dia"
+]
+
+def run_drift_report(
+    reference_path="data/processed/nhanes_2015.parquet",
+    current_path="data/processed/nhanes_2021.parquet",
+    model_path="models/diabetes_xgb.pkl",
+    output_path="reports/model_health_report.html"
+):
+    ref = pd.read_parquet(reference_path)[DRIFT_FEATURES + ["diabetes_label"]].dropna()
+    cur = pd.read_parquet(current_path)[DRIFT_FEATURES + ["diabetes_label"]].dropna()
+
+    model = joblib.load(model_path)
+    ref["prediction"] = model.predict(ref[DRIFT_FEATURES])
+    cur["prediction"] = model.predict(cur[DRIFT_FEATURES])
+
+    report = Report(metrics=[
+        DatasetDriftMetric(),
+        DataDriftTable(),
+        ColumnDriftMetric(column_name="glucose"),
+        ColumnDriftMetric(column_name="hba1c"),
+        ColumnDriftMetric(column_name="bmi"),
+        ClassificationPreset(),
+    ])
+
+    report.run(reference_data=ref, current_data=cur)
+    report.save_html(output_path)
+    print(f"[SENTINEL] Health Report saved → {output_path}")
+
+    result = report.as_dict()
+    drift_detected = result["metrics"][0]["result"]["dataset_drift"]
+
+    if drift_detected:
+        print("[ALERT] Significant data drift detected! Retraining recommended.")
+    else:
+        print("[OK] No significant drift detected.")
+
+    return result
+
+if __name__ == "__main__":
+    run_drift_report()
+```
+
+---
+
+
+## 6. Layer 4 — Evidence Summarizer (NLP + RAG)
+
+### 6.1 Architecture
+
+```
+User Input: "Summarize patient evidence for Metformin in Type 2 Diabetes"
+        ↓
+ChromaDB — semantic search over 4,000+ drug reviews (D5)
+        ↓
+Top-K relevant review chunks retrieved
+        ↓
+LangChain RetrievalQA → LLM (GPT-4o-mini OR Llama 3 via Ollama)
+        ↓
+Structured output: effectiveness · side effects · sentiment · recommendation
+```
+
+---
+
+### 6.2 Index Drug Reviews (`src/nlp/rag_pipeline.py`)
+
+```python
+import pandas as pd
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"   # Free, local
+CHROMA_DIR = "./chroma_db"
+
+def build_drug_index(reviews_path="data/raw/drug_reviews/druglib_reviews.csv"):
+    df = pd.read_csv(reviews_path, sep="\t", encoding="latin-1")
+
+    df["text"] = (
+        "Drug: " + df["urlDrugName"].fillna("Unknown") + "\n"
+        + "Condition: " + df["condition"].fillna("Unknown") + "\n"
+        + "Benefits: " + df["benefitsReview"].fillna("") + "\n"
+        + "Side Effects: " + df["sideEffectsReview"].fillna("") + "\n"
+        + "Comments: " + df["commentsReview"].fillna("") + "\n"
+        + "Rating: " + df["rating"].astype(str)
+    )
+
+    docs = [
+        Document(
+            page_content=row["text"],
+            metadata={
+                "drug": row.get("urlDrugName", ""),
+                "condition": row.get("condition", ""),
+                "rating": row.get("rating", 0),
+            }
+        )
+        for _, row in df.iterrows()
+    ]
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = splitter.split_documents(docs)
+
+    embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    vectorstore = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        persist_directory=CHROMA_DIR
+    )
+    vectorstore.persist()
+    print(f"[NLP] Indexed {len(chunks)} chunks into ChromaDB.")
+    return vectorstore
+
+def load_drug_index():
+    embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    return Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
+```
+
+---
+
+### 6.3 Summarizer Chain (`src/nlp/summarizer.py`)
+
+```python
+from langchain.chains import RetrievalQA
+from langchain_community.chat_models import ChatOpenAI
+from rag_pipeline import load_drug_index
+
+SYSTEM_PROMPT = """
+You are a clinical evidence summarizer for a Global Data Science team.
+Given patient drug reviews, produce a concise structured summary with:
+1. Drug effectiveness (1-2 sentences)
+2. Most common side effects
+3. Overall patient sentiment (Positive / Mixed / Negative)
+4. Key recommendation for the clinical team
+Keep your response factual, neutral, and evidence-based.
+"""
+
+def summarize_drug(condition: str, drug: str = None, top_k: int = 10):
+    vectorstore = load_drug_index()
+    retriever = vectorstore.as_retriever(
+        search_kwargs={
+            "k": top_k,
+            "filter": {"condition": condition} if condition else None
+        }
+    )
+
+    # Option A: OpenAI (paid, ~$0.01/query)
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+    # Option B: Ollama / Llama 3 (free, local) — uncomment to use
+    # from langchain_community.chat_models import ChatOllama
+    # llm = ChatOllama(model="llama3")
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever,
+        chain_type="stuff",
+    )
+
+    query = f"Summarize patient experiences with {drug or 'medications'} for {condition}."
+    return qa_chain.run(query)
+```
+
+---
+
+## 7. Streamlit Dashboard (`app/dashboard.py`)
+
+```python
+import streamlit as st
+import pandas as pd
+import joblib
+import sys
+sys.path.append("../src")
+
+from monitoring.drift_detector import run_drift_report
+from nlp.summarizer import summarize_drug
+
+st.set_page_config(page_title="P.U.L.S.E. Dashboard", layout="wide")
+st.title("P.U.L.S.E. — Clinical Intelligence Platform")
+
+tab1, tab2, tab3 = st.tabs(["Risk Prediction", "Drift Monitor", "Drug Evidence"])
+
+# --- TAB 1: Risk Prediction ---
+with tab1:
+    st.header("Patient Risk Prediction")
+    col1, col2 = st.columns(2)
+    with col1:
+        age = st.slider("Age", 18, 90, 50)
+        bmi = st.slider("BMI", 15.0, 50.0, 27.0)
+        glucose = st.slider("Fasting Glucose (mg/dL)", 70, 300, 100)
+        hba1c = st.slider("HbA1c (%)", 4.0, 12.0, 5.5)
+    with col2:
+        bp_sys = st.slider("Systolic BP (mmHg)", 80, 200, 120)
+        bp_dia = st.slider("Diastolic BP (mmHg)", 50, 120, 80)
+        gender = st.selectbox("Gender", ["Male", "Female"])
+
+    if st.button("Run Prediction"):
+        model = joblib.load("models/diabetes_xgb.pkl")
+        features = joblib.load("models/diabetes_features.pkl")
+        X = pd.DataFrame([[
+            age, 1 if gender == "Male" else 0, bmi,
+            glucose, hba1c, bp_sys, bp_dia
+        ]], columns=features)
+        proba = model.predict_proba(X)[0][1]
+        st.metric("Diabetes Risk Score", f"{proba:.1%}")
+        if proba > 0.6:
+            st.error("High Risk — Triggering Evidence Retrieval")
+            summary = summarize_drug(condition="Diabetes", drug="Metformin")
+            st.subheader("Clinical Evidence Summary (Metformin)")
+            st.write(summary)
+
+# --- TAB 2: Drift Monitor ---
+with tab2:
+    st.header("Sentinel Suite — Model Health Monitor")
+    if st.button("Run Drift Detection (2015-16 vs 2021-23)"):
+        with st.spinner("Running Evidently AI drift analysis..."):
+            run_drift_report()
+        st.success("Report generated!")
+        with open("reports/model_health_report.html", "r") as f:
+            st.components.v1.html(f.read(), height=800, scrolling=True)
+
+# --- TAB 3: Drug Evidence ---
+with tab3:
+    st.header("Therapeutic NLP Assistant")
+    condition = st.text_input("Clinical condition", "Type 2 Diabetes")
+    drug = st.text_input("Drug name (optional)", "Metformin")
+    if st.button("Retrieve & Summarize Evidence"):
+        with st.spinner("Querying drug review database..."):
+            summary = summarize_drug(condition=condition, drug=drug)
+        st.subheader("Clinical Evidence Summary")
+        st.write(summary)
+```
+
+**Run with:** `streamlit run app/dashboard.py`
+
+---
+
+## 8. MLflow Experiment Tracking
+
+```bash
+# Start MLflow UI (run from project root)
+mlflow ui --port 5000
+# Open: http://localhost:5000
+```
+
+MLflow automatically logs per training run:
+- XGBoost hyperparameters
+- CV AUC mean and standard deviation
+- SHAP feature importance artifacts
+- Serialized model (for re-deployment / version comparison)
+
+
+## 9. Key Technical Decisions
+
+1. **XGBoost over Logistic Regression** — clinical biomarkers have non-linear interactions (e.g., glucose × HbA1c × BMI). XGBoost handles this naturally; SHAP makes it interpretable for clinical audiences.
+
+2. **Evidently AI over custom drift code** — production-grade library, generates shareable HTML reports, mirrors real-world MLOps tooling used in pharma and medtech.
+
+3. **ChromaDB + HuggingFace Embeddings** — no API cost for indexing. Embeddings run fully locally. Only the final summarization step calls an LLM (GPT-4o-mini ~$0.01/query, or free via Ollama).
+
+4. **NHANES XPT files** — must use `pyreadstat`, not pandas directly. Always join on `SEQN`. File naming conventions differ by cycle — the loader uses keyword matching to handle this automatically.
+
+5. **Parquet over CSV** — for processed data, Parquet is 5–10x faster at read time and preserves column dtypes. Critical for the ~100K+ row master table used across multiple scripts.
+
+6. **Stratified splits** — clinical datasets are often class-imbalanced (e.g., diabetic vs non-diabetic). Always use `stratify=y` in `train_test_split` and `StratifiedKFold` for CV.
