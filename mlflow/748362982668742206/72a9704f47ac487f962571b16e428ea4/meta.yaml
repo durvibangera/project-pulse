@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/pulse/mlflow/748362982668742206/72a9704f47ac487f962571b16e428ea4/artifacts
+end_time: 1774620361214
+entry_point_name: ''
+experiment_id: '748362982668742206'
+lifecycle_stage: active
+run_id: 72a9704f47ac487f962571b16e428ea4
+run_name: DiabetesV2b-NHANES-Clinical
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1774620355455
+status: 3
+tags: []
+user_id: durvi

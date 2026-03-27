@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/pulse/mlflow/441272672136537059/2cdd930311204f12bb3d71ef454d0034/artifacts
+end_time: 1774619084835
+entry_point_name: ''
+experiment_id: '441272672136537059'
+lifecycle_stage: active
+run_id: 2cdd930311204f12bb3d71ef454d0034
+run_name: CardioClassifier
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1774619078058
+status: 3
+tags: []
+user_id: durvi

@@ -1,0 +1,10 @@
+artifact_location: file:///D:/pulse/mlflow/441272672136537059/models/m-315dec7f75d349a5a3fee7cc948b1198/artifacts
+creation_timestamp: 1774620450075
+experiment_id: '441272672136537059'
+last_updated_timestamp: 1774620454428
+model_id: m-315dec7f75d349a5a3fee7cc948b1198
+model_type: null
+name: CardioClassifier
+source_run_id: 710e6e787fec476598b6305c057faa62
+status: 2
+status_message: null

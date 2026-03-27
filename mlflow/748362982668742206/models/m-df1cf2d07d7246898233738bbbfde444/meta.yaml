@@ -1,0 +1,10 @@
+artifact_location: file:///D:/pulse/mlflow/748362982668742206/models/m-df1cf2d07d7246898233738bbbfde444/artifacts
+creation_timestamp: 1774620357766
+experiment_id: '748362982668742206'
+last_updated_timestamp: 1774620361200
+model_id: m-df1cf2d07d7246898233738bbbfde444
+model_type: null
+name: DiabetesV2b-NHANES-Clinical
+source_run_id: 72a9704f47ac487f962571b16e428ea4
+status: 2
+status_message: null

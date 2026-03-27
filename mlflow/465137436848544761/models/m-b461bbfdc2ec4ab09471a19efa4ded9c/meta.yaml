@@ -1,0 +1,10 @@
+artifact_location: file:///D:/pulse/mlflow/465137436848544761/models/m-b461bbfdc2ec4ab09471a19efa4ded9c/artifacts
+creation_timestamp: 1774618871308
+experiment_id: '465137436848544761'
+last_updated_timestamp: 1774618880403
+model_id: m-b461bbfdc2ec4ab09471a19efa4ded9c
+model_type: null
+name: DiabetesClassifier
+source_run_id: d4261f1217df4ec58a8e47b94c2e6b41
+status: 2
+status_message: null

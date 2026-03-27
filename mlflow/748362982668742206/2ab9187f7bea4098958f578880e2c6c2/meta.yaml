@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/pulse/mlflow/748362982668742206/2ab9187f7bea4098958f578880e2c6c2/artifacts
+end_time: 1774620258441
+entry_point_name: ''
+experiment_id: '748362982668742206'
+lifecycle_stage: active
+run_id: 2ab9187f7bea4098958f578880e2c6c2
+run_name: DiabetesV2a-D130-Readmission
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1774620248218
+status: 3
+tags: []
+user_id: durvi

@@ -1,0 +1,10 @@
+artifact_location: file:///D:/pulse/mlflow/748362982668742206/models/m-e002ee21ddcd4ea591ae0b2e99dcf3fb/artifacts
+creation_timestamp: 1774620236313
+experiment_id: '748362982668742206'
+last_updated_timestamp: 1774620247670
+model_id: m-e002ee21ddcd4ea591ae0b2e99dcf3fb
+model_type: null
+name: DiabetesV2-Combined
+source_run_id: 0442fa3bd31c40509e2764362ef34f25
+status: 2
+status_message: null

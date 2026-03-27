@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/pulse/mlflow/465137436848544761/fce4fe3bce3644309926d5af77416d2b/artifacts
+end_time: 1774618933253
+entry_point_name: ''
+experiment_id: '465137436848544761'
+lifecycle_stage: active
+run_id: fce4fe3bce3644309926d5af77416d2b
+run_name: DiabetesClassifier
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1774618924031
+status: 3
+tags: []
+user_id: durvi

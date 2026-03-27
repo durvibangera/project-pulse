@@ -1,0 +1,10 @@
+artifact_location: file:///D:/pulse/mlflow/748362982668742206/models/m-ce9d1d5bd8c24a2bab425d5d08812293/artifacts
+creation_timestamp: 1774620254032
+experiment_id: '748362982668742206'
+last_updated_timestamp: 1774620258425
+model_id: m-ce9d1d5bd8c24a2bab425d5d08812293
+model_type: null
+name: DiabetesV2a-D130-Readmission
+source_run_id: 2ab9187f7bea4098958f578880e2c6c2
+status: 2
+status_message: null

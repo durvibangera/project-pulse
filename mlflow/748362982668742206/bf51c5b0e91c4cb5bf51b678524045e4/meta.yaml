@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/pulse/mlflow/748362982668742206/bf51c5b0e91c4cb5bf51b678524045e4/artifacts
+end_time: 1774620345545
+entry_point_name: ''
+experiment_id: '748362982668742206'
+lifecycle_stage: active
+run_id: bf51c5b0e91c4cb5bf51b678524045e4
+run_name: DiabetesV2-Combined
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1774620334889
+status: 3
+tags: []
+user_id: durvi

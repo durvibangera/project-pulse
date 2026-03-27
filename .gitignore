@@ -68,8 +68,7 @@ reports/**/*.html
 *.mlflow
 
 # MLflow
-mlflow/mlruns/
-mlflow/.trash/
+mlflow/
 
 # ChromaDB (large vector store)
 chroma_db/
