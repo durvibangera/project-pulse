@@ -67,11 +67,12 @@ with st.sidebar:
         **Stack**
         - XGBoost · MLflow · Evidently
         - ChromaDB · Mistral 7B (Ollama)
-        - sentence-transformers
+        - DuckDB · lifelines · ReportLab
+        - sentence-transformers · PySpark
         """
     )
     st.divider()
-    st.caption("v1.0 · Global Data Science & Analytics")
+    st.caption("v2.0 · Global Data Science & Analytics")
     st.divider()
     st.header("Reports")
     if st.button("Generate PDF Report"):
@@ -88,9 +89,10 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════════════════════
 # TABS
 # ════════════════════════════════════════════════════════════════════════════
-tab_risk, tab_drift, tab_drug = st.tabs(
-    ["🧬 Risk Prediction", "📊 Drift Monitor", "💊 Drug Evidence"]
-)
+tab_risk, tab_drift, tab_drug, tab_sql, tab_feasibility, tab_trial, tab_runner = st.tabs([
+    "🧬 Risk Prediction", "📊 Drift Monitor", "💊 Drug Evidence",
+    "📈 SQL Analytics", "🔍 Feasibility", "🧪 Trial Sim", "⚙️ Model Runner",
+])
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -427,3 +429,512 @@ with tab_drug:
         st.bar_chart(top_cond.set_index("Condition"))
     else:
         st.info("Drug review data not found at `data/raw/drug-reviews/`.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — SQL ANALYTICS
+# ════════════════════════════════════════════════════════════════════════════
+with tab_sql:
+    st.header("📈 SQL Analytics")
+    st.caption(
+        "DuckDB analytics sprint — 6 SQL queries on the 127k-patient master table.  "
+        "All queries run directly on Parquet files with zero data-loading overhead."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def _load_sql_analytics():
+        import duckdb
+        con = duckdb.connect()
+        con.execute(
+            "CREATE VIEW master AS SELECT * FROM "
+            "read_parquet('data/processed/master_patient_table.parquet')"
+        )
+        q1 = con.execute("""
+            SELECT source_dataset,
+                   COUNT(*) AS n,
+                   ROUND(AVG(age), 1) AS avg_age,
+                   ROUND(STDDEV(age), 1) AS std_age,
+                   ROUND(AVG(bmi), 1) AS avg_bmi,
+                   SUM(CASE WHEN gender = 1 THEN 1 ELSE 0 END) AS male_count,
+                   SUM(CASE WHEN gender = 0 THEN 1 ELSE 0 END) AS female_count
+            FROM master GROUP BY source_dataset ORDER BY n DESC
+        """).df()
+        q2 = con.execute("""
+            SELECT
+                CASE
+                    WHEN glucose < 100 AND hba1c < 5.7 THEN 'Normal'
+                    WHEN glucose BETWEEN 100 AND 125
+                         OR hba1c BETWEEN 5.7 AND 6.4 THEN 'Pre-diabetic'
+                    WHEN glucose >= 126 OR hba1c >= 6.5 THEN 'Diabetic'
+                    ELSE 'Insufficient data'
+                END AS risk_category,
+                COUNT(*) AS patient_count,
+                ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) AS pct_of_total
+            FROM master
+            GROUP BY risk_category ORDER BY patient_count DESC
+        """).df()
+        q3 = con.execute("""
+            SELECT
+                ROUND(CORR(glucose, diabetes_label), 3)            AS glucose_corr,
+                ROUND(CORR(hba1c, diabetes_label), 3)              AS hba1c_corr,
+                ROUND(CORR(bmi, diabetes_label), 3)                AS bmi_corr,
+                ROUND(CORR(blood_pressure_sys, diabetes_label), 3) AS bp_corr,
+                ROUND(CORR(age, diabetes_label), 3)                AS age_corr
+            FROM master WHERE diabetes_label IS NOT NULL
+        """).df()
+        q4 = con.execute("""
+            SELECT nhanes_cycle,
+                   ROUND(AVG(glucose), 2) AS avg_glucose,
+                   ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY glucose), 2)
+                       AS median_glucose,
+                   ROUND(AVG(hba1c), 2)   AS avg_hba1c,
+                   ROUND(AVG(bmi), 2)     AS avg_bmi,
+                   COUNT(*)               AS n
+            FROM master
+            WHERE source_dataset = 'nhanes' AND nhanes_cycle IS NOT NULL
+            GROUP BY nhanes_cycle ORDER BY nhanes_cycle
+        """).df()
+        q5 = con.execute("""
+            SELECT patient_id, source_dataset, age, bmi, glucose, hba1c,
+                   blood_pressure_sys,
+                   CASE
+                       WHEN glucose >= 200 OR hba1c >= 9.0 THEN 'Critical'
+                       WHEN glucose >= 126 OR hba1c >= 6.5 THEN 'High'
+                       ELSE 'Moderate'
+                   END AS risk_tier
+            FROM master
+            WHERE (glucose >= 126 OR hba1c >= 6.5) AND diabetes_label IS NOT NULL
+            ORDER BY glucose DESC, hba1c DESC
+            LIMIT 100
+        """).df()
+        return q1, q2, q3, q4, q5
+
+    try:
+        q1_s, q2_s, q3_s, q4_s, q5_s = _load_sql_analytics()
+
+        _m1, _m2, _m3 = st.columns(3)
+        _m1.metric("Total Patients",     f"{q1_s['n'].sum():,}")
+        _m2.metric("Source Datasets",    str(len(q1_s)))
+        _m3.metric("High-Risk Patients", f"{len(q5_s):,}+")
+
+        st.divider()
+        _cl, _cr = st.columns(2, gap="large")
+
+        with _cl:
+            st.subheader("Demographics by Dataset")
+            st.dataframe(q1_s, use_container_width=True, hide_index=True)
+
+            st.subheader("ADA Diabetes Risk Stratification")
+            st.bar_chart(q2_s.set_index("risk_category")["patient_count"])
+            st.dataframe(q2_s, use_container_width=True, hide_index=True)
+
+        with _cr:
+            st.subheader("Biomarker Correlations with Diabetes Label")
+            _corr = q3_s.T.reset_index()
+            _corr.columns = ["Biomarker", "Pearson r"]
+            _corr["Biomarker"] = (
+                _corr["Biomarker"]
+                .str.replace("_corr", "")
+                .str.replace("_", " ")
+                .str.title()
+            )
+            st.dataframe(
+                _corr.sort_values("Pearson r", ascending=False),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.subheader("NHANES Cross-Cycle Biomarker Trend")
+            st.dataframe(q4_s, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("🚨 High-Risk Patient Registry")
+        st.caption(
+            "Patients with Glucose ≥ 126 mg/dL or HbA1c ≥ 6.5%  "
+            "— sorted by severity (top 100 shown)"
+        )
+        st.dataframe(q5_s, use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇ Download High-Risk Cohort CSV",
+            data=q5_s.to_csv(index=False),
+            file_name="high_risk_patients.csv",
+            mime="text/csv",
+        )
+
+    except Exception as _exc_sql:
+        st.error(f"SQL Analytics error: {_exc_sql}")
+        st.info(
+            "Make sure `data/processed/master_patient_table.parquet` exists.  "
+            "Run Notebook 01 to generate it."
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 5 — FEASIBILITY
+# ════════════════════════════════════════════════════════════════════════════
+with tab_feasibility:
+    st.header("🔍 SQL Feasibility Analysis")
+    st.caption(
+        "Pre-modelling triage — 5 DuckDB checks a senior data scientist runs "
+        "before approving any new modelling task.  Mirrors Notebook 07."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def _load_feasibility():
+        import duckdb
+        con = duckdb.connect()
+        con.execute(
+            "CREATE VIEW master AS SELECT * FROM "
+            "read_parquet('data/processed/master_patient_table.parquet')"
+        )
+        f1 = con.execute("""
+            SELECT
+                source_dataset,
+                CASE WHEN age >= 60 THEN '60+' ELSE 'Under 60' END AS age_group,
+                COUNT(*) AS patient_count,
+                ROUND(AVG(diabetes_label), 3) AS diabetes_rate,
+                ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY source_dataset), 1)
+                    AS pct_of_dataset
+            FROM master
+            WHERE diabetes_label IS NOT NULL
+            GROUP BY source_dataset, age_group
+            ORDER BY source_dataset, age_group
+        """).df()
+        f2 = con.execute("""
+            SELECT
+                nhanes_cycle,
+                COUNT(*) AS total_patients,
+                ROUND(COUNT(hba1c)   * 100.0 / COUNT(*), 1) AS hba1c_completeness_pct,
+                ROUND(COUNT(glucose) * 100.0 / COUNT(*), 1) AS glucose_completeness_pct,
+                ROUND(COUNT(bmi)     * 100.0 / COUNT(*), 1) AS bmi_completeness_pct
+            FROM master
+            WHERE source_dataset = 'nhanes'
+            GROUP BY nhanes_cycle
+        """).df()
+        f3 = con.execute("""
+            SELECT
+                source_dataset,
+                CAST(diabetes_label AS INTEGER) AS label,
+                COUNT(*) AS count,
+                ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY source_dataset), 1)
+                    AS pct
+            FROM master
+            WHERE diabetes_label IS NOT NULL
+            GROUP BY source_dataset, diabetes_label
+            ORDER BY source_dataset, label
+        """).df()
+        f4 = con.execute("""
+            SELECT
+                nhanes_cycle,
+                ROUND(AVG(glucose), 2)    AS avg_glucose,
+                ROUND(AVG(bmi), 2)        AS avg_bmi,
+                ROUND(AVG(hba1c), 2)      AS avg_hba1c,
+                ROUND(STDDEV(glucose), 2) AS std_glucose,
+                ROUND(STDDEV(bmi), 2)     AS std_bmi
+            FROM master
+            WHERE source_dataset = 'nhanes'
+            GROUP BY nhanes_cycle
+        """).df()
+        f5 = con.execute("""
+            SELECT
+                source_dataset,
+                COUNT(*) AS total,
+                COUNT(diabetes_label) AS labeled_diabetes,
+                COUNT(cardio_label)   AS labeled_cardio,
+                CASE
+                    WHEN COUNT(diabetes_label) >= 1000 THEN 'Sufficient'
+                    WHEN COUNT(diabetes_label) >= 300  THEN 'Marginal'
+                    ELSE 'Insufficient'
+                END AS diabetes_feasibility,
+                CASE
+                    WHEN COUNT(cardio_label) >= 1000 THEN 'Sufficient'
+                    WHEN COUNT(cardio_label) >= 300  THEN 'Marginal'
+                    ELSE 'Insufficient'
+                END AS cardio_feasibility
+            FROM master
+            GROUP BY source_dataset
+            ORDER BY total DESC
+        """).df()
+        fsum = con.execute("""
+            SELECT
+                COUNT(*) AS total_patients,
+                COUNT(DISTINCT source_dataset) AS datasets,
+                ROUND(COUNT(diabetes_label) * 100.0 / COUNT(*), 1) AS diabetes_label_coverage_pct,
+                ROUND(COUNT(hba1c) * 100.0 / COUNT(*), 1) AS hba1c_coverage_pct,
+                ROUND(AVG(age), 1) AS avg_age,
+                ROUND(AVG(bmi), 1) AS avg_bmi
+            FROM master
+        """).df()
+        return f1, f2, f3, f4, f5, fsum
+
+    try:
+        f1_d, f2_d, f3_d, f4_d, f5_d, fsum_d = _load_feasibility()
+
+        _all_suff  = (f5_d["diabetes_feasibility"] == "Sufficient").all()
+        _min_comp  = min(
+            float(f2_d["hba1c_completeness_pct"].min())   if len(f2_d) else 100.0,
+            float(f2_d["glucose_completeness_pct"].min()) if len(f2_d) else 100.0,
+        )
+        _min_minor = (
+            float(f3_d.groupby("source_dataset")["pct"].min().min())
+            if len(f3_d) else 100.0
+        )
+
+        _s1, _s2, _s3 = st.columns(3)
+        _s1.metric("Sample Size Check",
+                   "✅ Sufficient" if _all_suff else "⚠️ Marginal",
+                   "Ready to model" if _all_suff else "See Check 5")
+        _s2.metric("Min Feature Completeness",
+                   f"{_min_comp:.0f}%",
+                   "✅ Above 70%" if _min_comp >= 70 else "⚠️ Below threshold")
+        _s3.metric("Min Minority Class",
+                   f"{_min_minor:.0f}%",
+                   "✅ Balanced" if _min_minor >= 20 else "⚠️ Use SMOTE")
+
+        st.divider()
+
+        with st.expander("Check 1 — Subgroup Data Availability (60+ cohort)", expanded=True):
+            st.caption("Threshold: < 500 patients in 60+ group → underpowered for subgroup model.")
+            st.dataframe(f1_d, use_container_width=True, hide_index=True)
+
+        with st.expander("Check 2 — Feature Completeness (NHANES cycles)"):
+            st.caption("Threshold: < 70% completeness → drift risk factor.")
+            st.dataframe(f2_d, use_container_width=True, hide_index=True)
+
+        with st.expander("Check 3 — Class Balance Assessment"):
+            st.caption("Threshold: minority class < 20% → apply SMOTE or scale_pos_weight.")
+            st.dataframe(f3_d, use_container_width=True, hide_index=True)
+
+        with st.expander("Check 4 — Cross-Cycle Biomarker Shift"):
+            st.caption("Decision rule: > 10% shift in mean glucose or BMI confirms real drift.")
+            st.dataframe(f4_d, use_container_width=True, hide_index=True)
+
+        with st.expander("Check 5 — Sample Size Validation"):
+            st.caption("Sufficient ≥ 1 000 · Marginal 300–999 · Insufficient < 300")
+            st.dataframe(f5_d, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("Master Table Summary")
+        st.dataframe(fsum_d, use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇ Download Feasibility Summary CSV",
+            data=fsum_d.to_csv(index=False),
+            file_name="feasibility_summary.csv",
+            mime="text/csv",
+        )
+
+    except Exception as _exc_feas:
+        st.error(f"Feasibility error: {_exc_feas}")
+        st.info("Make sure `data/processed/master_patient_table.parquet` exists.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 6 — TRIAL SIMULATOR
+# ════════════════════════════════════════════════════════════════════════════
+with tab_trial:
+    st.header("🧪 Synthetic Clinical Trial Simulator")
+    st.caption(
+        "Propensity score matching on the Diabetes 130-US hospital dataset.  "
+        "Abbott RWE workflow: PSM → outcome analysis → Kaplan-Meier → log-rank test.  "
+        "Mirrors Notebook 08."
+    )
+
+    _km_path = os.path.join(ROOT, "reports", "kaplan_meier.png")
+
+    _col_btn, _col_info = st.columns([1, 2])
+    with _col_btn:
+        _run_trial = st.button("▶ Run Simulation", type="primary", use_container_width=True)
+    with _col_info:
+        st.info(
+            "**Treatment proxy:** HbA1c ≥ 8.0% → insulin-intensification arm.  \n"
+            "**Matching:** 1:1 nearest-neighbour propensity score.  \n"
+            "**Outcome:** 30-day readmission (proxied by diabetes_label)."
+        )
+
+    if os.path.exists(_km_path) and not _run_trial:
+        st.image(_km_path, caption="Kaplan-Meier: last simulation run",
+                 use_container_width=True)
+        st.info("Click **▶ Run Simulation** to regenerate with fresh data.")
+
+    if _run_trial:
+        with st.spinner("Running PSM + Kaplan-Meier (~5 sec) …"):
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as _plt
+                from sklearn.linear_model import LogisticRegression as _LR
+                from sklearn.preprocessing import StandardScaler as _SS
+                from sklearn.neighbors import NearestNeighbors as _NN
+                from lifelines import KaplanMeierFitter as _KMF
+                from lifelines.statistics import logrank_test as _lrt
+
+                _master = pd.read_parquet(
+                    os.path.join(ROOT, "data", "processed", "master_patient_table.parquet")
+                )
+                _tdf = _master[_master["source_dataset"] == "diabetes_130"].copy()
+                _tdf = _tdf.dropna(subset=["age", "gender", "bmi", "diabetes_label"])
+
+                _FEATS = ["age", "gender", "bmi", "blood_pressure_sys"]
+                _tdf["treatment"] = (_tdf["hba1c"] >= 8.0).astype(int)
+                _Xt = _tdf[_FEATS].fillna(_tdf[_FEATS].median())
+                _yt = _tdf["treatment"]
+
+                _sc = _SS()
+                _ps = _LR(max_iter=500, random_state=42)
+                _ps.fit(_sc.fit_transform(_Xt), _yt)
+                _tdf["propensity_score"] = _ps.predict_proba(_sc.transform(_Xt))[:, 1]
+
+                _treated = _tdf[_tdf["treatment"] == 1].copy()
+                _control = _tdf[_tdf["treatment"] == 0].copy()
+                _nbrs = _NN(n_neighbors=1, algorithm="ball_tree")
+                _nbrs.fit(_control[["propensity_score"]])
+                _, _idx = _nbrs.kneighbors(_treated[["propensity_score"]])
+                _mctrl = _control.iloc[_idx.flatten()].copy()
+                _mtrt  = _treated.copy()
+
+                _oc   = "diabetes_label"
+                _tr   = _mtrt[_oc].mean()
+                _cr   = _mctrl[_oc].mean()
+                _arr  = _cr - _tr
+                _nnt  = (1 / _arr) if _arr > 0 else float("inf")
+
+                np.random.seed(42)
+                _mtrt  = _mtrt.copy()
+                _mctrl = _mctrl.copy()
+                _mtrt["time"]  = np.random.exponential(
+                    120 - 20 * _mtrt[_oc],  len(_mtrt)
+                ).clip(1, 365)
+                _mctrl["time"] = np.random.exponential(
+                    100 - 20 * _mctrl[_oc], len(_mctrl)
+                ).clip(1, 365)
+
+                _lr = _lrt(
+                    _mtrt["time"], _mctrl["time"],
+                    event_observed_A=_mtrt[_oc],
+                    event_observed_B=_mctrl[_oc],
+                )
+
+                _fig, _ax = _plt.subplots(figsize=(9, 5))
+                _KMF().fit(_mtrt["time"],  _mtrt[_oc],
+                           label="Treatment arm").plot_survival_function(ax=_ax, ci_show=True)
+                _KMF().fit(_mctrl["time"], _mctrl[_oc],
+                           label="Control arm").plot_survival_function(ax=_ax, ci_show=True)
+                _ax.set_title("Kaplan-Meier: Readmission-free survival (simulated trial)")
+                _ax.set_xlabel("Days")
+                _ax.set_ylabel("Survival probability")
+                _plt.tight_layout()
+                os.makedirs(os.path.join(ROOT, "reports"), exist_ok=True)
+                _plt.savefig(_km_path, dpi=150)
+                _plt.close()
+
+                st.success(f"✅ Simulation complete — {len(_mtrt):,} matched pairs")
+
+                _km1, _km2, _km3, _km4 = st.columns(4)
+                _km1.metric("Treatment readmission", f"{_tr:.1%}")
+                _km2.metric("Control readmission",   f"{_cr:.1%}")
+                _km3.metric("ARR",
+                            f"{_arr:.3f}",
+                            f"NNT = {_nnt:.0f}" if _arr > 0 else "No benefit")
+                _km4.metric("Log-rank p-value",
+                            f"{_lr.p_value:.4f}",
+                            "✅ Significant" if _lr.p_value < 0.05 else "Not significant")
+
+                st.subheader("Cohort Balance After Matching")
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Feature":     col,
+                        "Treated mean": round(_mtrt[col].mean(), 2),
+                        "Control mean": round(_mctrl[col].mean(), 2),
+                        "Abs. diff":    round(
+                            abs(_mtrt[col].mean() - _mctrl[col].mean()), 2
+                        ),
+                    } for col in _FEATS]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.image(_km_path, caption="Kaplan-Meier Survival Curve",
+                         use_container_width=True)
+
+            except ImportError as _ie:
+                st.error(f"Missing dependency: {_ie}")
+                st.info("Install with: `pip install lifelines`")
+            except Exception as _exc_trial:
+                st.error(f"Simulation error: {_exc_trial}")
+                import traceback as _tb
+                with st.expander("Traceback"):
+                    st.code(_tb.format_exc())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 7 — MODEL RUNNER
+# ════════════════════════════════════════════════════════════════════════════
+with tab_runner:
+    st.header("⚙️ YAML-Driven Model Runner")
+    st.caption(
+        "Train any model by selecting a YAML config.  "
+        "Equivalent to: `python run.py --config configs/<name>.yaml`"
+    )
+
+    import yaml as _yaml
+    import subprocess as _subp
+
+    _cfg_options = {
+        "🧬 Diabetes Classifier  (NHANES + Diabetes 130)": os.path.join(
+            ROOT, "configs", "diabetes.yaml"
+        ),
+        "❤️  Cardio Classifier   (Statlog Heart)": os.path.join(
+            ROOT, "configs", "cardio.yaml"
+        ),
+    }
+
+    _sel_label = st.selectbox("Select model config", list(_cfg_options.keys()))
+    _sel_path  = _cfg_options[_sel_label]
+
+    with open(_sel_path) as _cf:
+        _cfg = _yaml.safe_load(_cf)
+
+    _cc, _cp = st.columns([1.5, 1], gap="large")
+
+    with _cc:
+        st.subheader("Config")
+        st.json(_cfg)
+
+    with _cp:
+        st.subheader("Training Parameters")
+        for _pk, _pv in _cfg.get("model_params", {}).items():
+            st.metric(_pk.replace("_", " ").title(), str(_pv))
+        st.divider()
+        st.markdown(f"**Label column:** `{_cfg.get('label_column')}`")
+        st.markdown(
+            f"**Features ({len(_cfg.get('features', []))}):** "
+            f"`{', '.join(_cfg.get('features', []))}`"
+        )
+        st.markdown(f"**Source datasets:** `{', '.join(_cfg.get('source_datasets', []))}`")
+        st.markdown(f"**Output path:** `{_cfg.get('output_model_path')}`")
+
+    st.divider()
+    _train_btn = st.button(
+        f"🚀  Train  {_cfg.get('model_name', 'Model')}",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if _train_btn:
+        _run_py = os.path.join(ROOT, "run.py")
+        with st.spinner(
+            f"Training {_cfg['model_name']} — ~30–60 sec …  \n"
+            f"Running: `python run.py --config {_sel_path}`"
+        ):
+            _proc = _subp.run(
+                [sys.executable, _run_py, "--config", _sel_path],
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+            )
+        if _proc.returncode == 0:
+            st.success(f"✅  {_cfg['model_name']} trained successfully!")
+            st.code(_proc.stdout, language="text")
+            _out = _cfg.get("output_model_path", "")
+            if _out and os.path.exists(os.path.join(ROOT, _out)):
+                st.info(f"Model saved → `{_out}`")
+        else:
+            st.error("Training failed.")
+            st.code(_proc.stderr or _proc.stdout, language="text")
